@@ -1,0 +1,159 @@
+import asyncio
+import logging
+import os
+
+import aiohttp
+import discord
+from discord import app_commands
+from dotenv import load_dotenv
+
+import db
+import poller
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.environ["DISCORD_TOKEN"]
+
+
+class YTBot(discord.Client):
+    def __init__(self):
+        intents = discord.Intents.default()
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        self.loop.create_task(poller.poll_loop(self))
+
+    async def on_ready(self):
+        logger.info("Logged in as %s (id: %s)", self.user, self.user.id)
+
+
+bot = YTBot()
+
+
+# ---------------------------------------------------------------------------
+# /subscribe
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="subscribe", description="Subscribe to a YouTube channel's uploads.")
+@app_commands.describe(
+    handle="YouTube @handle (e.g. @MrBeast)",
+    channel="Discord channel to post new videos in",
+)
+@app_commands.checks.has_permissions(manage_channels=True)
+async def subscribe(
+    interaction: discord.Interaction,
+    handle: str,
+    channel: discord.TextChannel,
+):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    handle = handle.lstrip("@")
+
+    async with aiohttp.ClientSession() as session:
+        yt_channel_id = await poller.fetch_channel_id(handle, session)
+
+    if not yt_channel_id:
+        await interaction.followup.send(
+            f"❌ Couldn't find a YouTube channel for `@{handle}`. "
+            "Double-check the handle and try again.",
+            ephemeral=True,
+        )
+        return
+
+    added = db.add_subscription(
+        guild_id=str(interaction.guild_id),
+        discord_channel_id=str(channel.id),
+        yt_handle=handle,
+        yt_channel_id=yt_channel_id,
+    )
+
+    if added:
+        await interaction.followup.send(
+            f"✅ Subscribed to **@{handle}**! New uploads will be posted in {channel.mention}.",
+            ephemeral=True,
+        )
+        logger.info("Guild %s subscribed to @%s (%s)", interaction.guild_id, handle, yt_channel_id)
+    else:
+        await interaction.followup.send(
+            f"⚠️ This server is already subscribed to **@{handle}**.",
+            ephemeral=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# /unsubscribe
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="unsubscribe", description="Stop posting uploads from a YouTube channel.")
+@app_commands.describe(handle="YouTube @handle to remove (e.g. @MrBeast)")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def unsubscribe(interaction: discord.Interaction, handle: str):
+    handle = handle.lstrip("@")
+    removed = db.remove_subscription(str(interaction.guild_id), handle)
+
+    if removed:
+        await interaction.response.send_message(
+            f"✅ Unsubscribed from **@{handle}**.", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"❌ No subscription found for **@{handle}** in this server.", ephemeral=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# /list
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="list", description="Show all active YouTube subscriptions for this server.")
+async def list_subs(interaction: discord.Interaction):
+    subs = db.get_subscriptions(str(interaction.guild_id))
+
+    if not subs:
+        await interaction.response.send_message(
+            "No subscriptions yet. Use `/subscribe` to add one!", ephemeral=True
+        )
+        return
+
+    lines = []
+    for sub in subs:
+        ch = f"<#{sub['discord_channel_id']}>"
+        lines.append(f"• **@{sub['yt_handle']}** → {ch}")
+
+    embed = discord.Embed(
+        title="YouTube Subscriptions",
+        description="\n".join(lines),
+        color=discord.Color.red(),
+    )
+    embed.set_footer(text=f"{len(subs)} subscription(s)")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
+# Error handler
+# ---------------------------------------------------------------------------
+@subscribe.error
+@unsubscribe.error
+async def permission_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Manage Channels** permission to use this command.", ephemeral=True
+        )
+    else:
+        logger.error("Command error: %s", error)
+        await interaction.response.send_message(
+            "❌ An unexpected error occurred.", ephemeral=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    db.init_db()
+    bot.run(TOKEN)
