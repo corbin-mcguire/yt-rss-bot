@@ -2,7 +2,9 @@
 
 Polls YouTube RSS feeds and posts new video notifications to Discord channels. Uses slash commands to manage subscriptions, backed by SQLite.
 
-## Setup
+---
+
+## Quick Start (Docker)
 
 ### 1. Create a Discord Bot
 
@@ -12,20 +14,48 @@ Polls YouTube RSS feeds and posts new video notifications to Discord channels. U
 4. Select bot permissions: `Send Messages`, `Embed Links`
 5. Use the generated URL to invite the bot to your server
 
-### 2. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Configure environment
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 # Edit .env and paste your bot token
 ```
 
-### 4. Run
+### 3. Build and run
+
+```bash
+./scripts/build.sh
+./scripts/run.sh
+```
+
+The bot starts in the background. The SQLite database is stored in a named Docker volume (`bot-data`) and persists across restarts.
+
+---
+
+## Helper Scripts
+
+| Script | Description |
+|---|---|
+| `./scripts/build.sh` | Build the Docker image |
+| `./scripts/run.sh` | Start the bot in the background |
+| `./scripts/stop.sh` | Stop the bot |
+| `./scripts/restart.sh` | Restart the bot |
+| `./scripts/logs.sh` | Follow live logs |
+| `./scripts/shell.sh` | Open a shell inside the running container |
+
+All scripts accept extra arguments that are forwarded to `docker compose`.
+
+---
+
+## Manual Setup (without Docker)
+
+### Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Run
 
 ```bash
 python bot.py
@@ -58,12 +88,31 @@ The bot will create `subscriptions.db` automatically on first run.
 - **Deduplication:** Video IDs are stored in the `seen_videos` table so the same video is never posted twice
 - **Multiple subscriptions:** You can subscribe to as many channels as you want, each posting to its own Discord channel
 
+---
+
 ## File Structure
 
 ```
-bot.py          # Discord bot, slash commands
-poller.py       # Background RSS polling loop
-db.py           # SQLite helpers
+bot.py              # Discord bot, slash commands
+poller.py           # Background RSS polling loop
+db.py               # SQLite helpers
 requirements.txt
 .env.example
+docker/
+  Dockerfile
+  docker-compose.yml
+scripts/
+  build.sh
+  run.sh
+  stop.sh
+  restart.sh
+  logs.sh
+  shell.sh
 ```
+
+## Configuration
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `DISCORD_TOKEN` | *(required)* | Discord bot token |
+| `DB_PATH` | `subscriptions.db` | Path to the SQLite database file |

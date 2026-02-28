@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import discord
@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 POLL_INTERVAL_SECONDS = 10 * 60  # 10 minutes
+BACKFILL_WINDOW = timedelta(days=7)
 
 
 async def fetch_channel_id(handle: str, session: aiohttp.ClientSession) -> str | None:
@@ -118,6 +119,17 @@ async def poll_loop(bot: discord.Client):
                 for video in videos:
                     if db.is_seen(video["video_id"]):
                         continue
+
+                    # Silently discard videos older than the backfill window so
+                    # the bot doesn't flood channels with history on first run.
+                    if video.get("published"):
+                        try:
+                            published = datetime.fromisoformat(video["published"].replace("Z", "+00:00"))
+                            if datetime.now(timezone.utc) - published > BACKFILL_WINDOW:
+                                db.mark_seen(video["video_id"], yt_channel_id)
+                                continue
+                        except ValueError:
+                            pass
 
                     db.mark_seen(video["video_id"], yt_channel_id)
                     embed = build_embed(video)

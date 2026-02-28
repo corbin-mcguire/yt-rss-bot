@@ -1,7 +1,8 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = "subscriptions.db"
+DB_PATH = os.environ.get("DB_PATH", "subscriptions.db")
 
 
 @contextmanager

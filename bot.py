@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 
 import aiohttp
 import discord
@@ -41,48 +42,67 @@ bot = YTBot()
 # ---------------------------------------------------------------------------
 # /subscribe
 # ---------------------------------------------------------------------------
+_CHANNEL_ID_RE = re.compile(r"^UC[\w-]{22}$")
+
+
 @bot.tree.command(name="subscribe", description="Subscribe to a YouTube channel's uploads.")
 @app_commands.describe(
-    handle="YouTube @handle (e.g. @MrBeast)",
+    handle="YouTube @handle (e.g. @MrBeast) or raw channel ID (e.g. UCxxxxxx...)",
     channel="Discord channel to post new videos in",
+    nickname="Display name shown in /list and notifications (required when using a raw channel ID)",
 )
 @app_commands.checks.has_permissions(manage_channels=True)
 async def subscribe(
     interaction: discord.Interaction,
     handle: str,
     channel: discord.TextChannel,
+    nickname: str | None = None,
 ):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    handle = handle.lstrip("@")
+    handle = handle.strip().lstrip("@")
 
-    async with aiohttp.ClientSession() as session:
-        yt_channel_id = await poller.fetch_channel_id(handle, session)
+    if _CHANNEL_ID_RE.match(handle):
+        # User supplied a raw channel ID — use it directly
+        yt_channel_id = handle
+        if not nickname:
+            await interaction.followup.send(
+                "❌ Please provide a `nickname` when subscribing by channel ID so it shows up "
+                "clearly in `/list` and notifications (e.g. `nickname:MrBeast`).",
+                ephemeral=True,
+            )
+            return
+        yt_handle = nickname.strip()
+    else:
+        async with aiohttp.ClientSession() as session:
+            yt_channel_id = await poller.fetch_channel_id(handle, session)
 
-    if not yt_channel_id:
-        await interaction.followup.send(
-            f"❌ Couldn't find a YouTube channel for `@{handle}`. "
-            "Double-check the handle and try again.",
-            ephemeral=True,
-        )
-        return
+        if not yt_channel_id:
+            await interaction.followup.send(
+                f"❌ Couldn't find a YouTube channel for `@{handle}`. "
+                "Double-check the handle, or look up the channel ID manually and pass it directly.",
+                ephemeral=True,
+            )
+            return
+
+        yt_handle = nickname.strip() if nickname else handle
 
     added = db.add_subscription(
         guild_id=str(interaction.guild_id),
         discord_channel_id=str(channel.id),
-        yt_handle=handle,
+        yt_handle=yt_handle,
         yt_channel_id=yt_channel_id,
     )
 
     if added:
         await interaction.followup.send(
-            f"✅ Subscribed to **@{handle}**! New uploads will be posted in {channel.mention}.",
+            f"✅ Subscribed to **@{yt_handle}**! New uploads will be posted in {channel.mention}.",
             ephemeral=True,
         )
-        logger.info("Guild %s subscribed to @%s (%s)", interaction.guild_id, handle, yt_channel_id)
+        logger.info("Guild %s subscribed to @%s (%s)", interaction.guild_id, yt_handle, yt_channel_id)
     else:
         await interaction.followup.send(
-            f"⚠️ This server is already subscribed to **@{handle}**.",
+            f"⚠️ This server is already subscribed to **@{yt_handle}**.",
             ephemeral=True,
         )
 
@@ -105,6 +125,46 @@ async def unsubscribe(interaction: discord.Interaction, handle: str):
         await interaction.response.send_message(
             f"❌ No subscription found for **@{handle}** in this server.", ephemeral=True
         )
+
+
+# ---------------------------------------------------------------------------
+# /directions
+# ---------------------------------------------------------------------------
+@bot.tree.command(name="directions", description="How to find a YouTube channel ID for use with /subscribe.")
+async def directions(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="How to Find a YouTube Channel ID",
+        description=(
+            "If `/subscribe` can't resolve a channel by handle, you can look up "
+            "the channel ID manually and pass it directly.\n\n"
+            "Channel IDs look like `UCxxxxxxxxxxxxxxxxxxxxxx` (24 characters)."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="Method 1 — Channel URL",
+        value=(
+            "Visit the channel on YouTube. If the URL contains `/channel/`, "
+            "the ID is right there:\n"
+            "`https://www.youtube.com/channel/`**`UCxxxxxxxxxxxxxxxxxxxxxx`**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Method 2 — Page source",
+        value=(
+            "1. Open the channel page in your browser\n"
+            "2. Press **Ctrl+U** (or **Cmd+U**) to view source\n"
+            '3. Search for `"channelId"` — the value next to it is the ID'
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Using the ID",
+        value='Pass it directly to `/subscribe`:\n`/subscribe handle:UCxxxxxxxxxxxxxxxxxxxxxx channel:#my-channel`',
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
